@@ -26,6 +26,11 @@
 #include "build.h"
 
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <spawn.h>
+#include <sys/types.h>
 
 #define DEFAULT_TASK_TITLE "New Task"
 #define DEFAULT_PRIORITY 100
@@ -433,8 +438,10 @@ bool ls_run(Command *self, const char *program_name, int argc, char **argv)
     return true;
 }
 
-char *create_new_task(const char *dir_path, const char *id_suffix, String_View title, int priority, Parsed_Tags parsed_tags)
+char *create_new_task(const char *dir_path, const char *id_suffix, String_View title, int priority, Parsed_Tags parsed_tags, char **created_md_path)
 {
+    UNUSED(created_md_path);
+
     char *id = temp_new_huid(id_suffix);
     char *task_path = temp_sprintf("%s/%s", dir_path, id);
     if (file_exists(task_path)) {
@@ -469,6 +476,9 @@ char *create_new_task(const char *dir_path, const char *id_suffix, String_View t
     const char *task_md_path = temp_sprintf("%s/%s/TASK.md", dir_path, id);
     if (!write_entire_file(task_md_path, sb_md_content.items, sb_md_content.count)) return NULL;
     print_task_report(dir_path, &task, SVNULL);
+
+    *created_md_path = task_md_path;
+
     return id;
 }
 
@@ -626,7 +636,7 @@ bool todo_run(Command *self, const char *program_name, int argc, char **argv)
                 }
             }
 
-            char *id = create_new_task(dir_path, id_suffix, title, DEFAULT_PRIORITY, parsed_tags);
+            char *id = create_new_task(dir_path, id_suffix, title, DEFAULT_PRIORITY, parsed_tags, NULL);
             if (id == NULL) {
                 return false;
             }
@@ -643,6 +653,23 @@ no_entire_file: {}
     return true;
 }
 
+
+bool open_editor(const char *file)
+{
+    if (file == NULL || *file == '\0')
+    {
+        return false;
+    }
+
+    // This is only going to work on x11; Wayland needs a patch!
+    extern char **environ;
+    char *cmd = "xdg-open";
+    char *argv[] = { cmd, (char *)file, NULL };
+    pid_t pid;
+
+    return posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
+}
+
 bool new_run(Command *self, const char *program_name, int argc, char **argv)
 {
     Flag_List tags_from_flags = {0};
@@ -650,12 +677,14 @@ bool new_run(Command *self, const char *program_name, int argc, char **argv)
     uint64_t priority = 0;
     char *id_suffix = NULL;
     bool yes = false;
+    bool open = false;
 
     void *c = flag_c_new(program_name);
     flag_c_list_var(c, &tags_from_flags, "t", "Tags to add to the new task");
     flag_c_uint64_var(c, &priority, "p", DEFAULT_PRIORITY, "Priority of the new task");
     flag_c_str_var(c, &id_suffix, "s", NULL, "Task ID optional suffix");
     flag_c_bool_var(c, &yes, "y", false, "Always answer 'y' to any prompts of this command");
+    flag_c_bool_var(c, &open, "o", false, "Open task in default editor");
     flag_c_bool_var(c, &help, "help", false, "Print this help message");
     String_Builder sb_title = {0};
 
@@ -715,7 +744,12 @@ bool new_run(Command *self, const char *program_name, int argc, char **argv)
         } create_it_anyway: {}
     }
 
-    if (!create_new_task(dir_path, id_suffix, title, priority, parsed_tags)) return false;
+    char *created_md_path = NULL;
+    if (!create_new_task(dir_path, id_suffix, title, priority, parsed_tags, &created_md_path)) return false;
+    if(open && created_md_path != NULL && !open_editor(created_md_path))
+    {
+        printf("WARNING: Failed to open editor for %s. \nPerhaps there is no default program association with markdown files?\n", created_md_path);
+    }
 
     return true;
 }
